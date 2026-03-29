@@ -33,7 +33,7 @@ function parseProtocolJson(raw: string): {
         cleaned.slice(start, end + 1).replace(/[\x00-\x1F\x7F]/g, ' ')
       );
     } catch (e) {
-      console.error('Protocol JSON parse failed:', e, '\nRaw:', raw.slice(0, 400));
+      console.error('[API] Protocol JSON parse failed:', e, '\nRaw:', raw.slice(0, 400));
       return {};
     }
   }
@@ -52,6 +52,7 @@ export async function POST(request: NextRequest) {
 
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+    // ── Извлекаем текст из файлов ─────────────────────────────────────────
     const textParts: string[] = [];
     const imageContent: Anthropic.ImageBlockParam[] = [];
 
@@ -80,12 +81,11 @@ export async function POST(request: NextRequest) {
       ? `\nДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ ПОЛЬЗОВАТЕЛЯ:\n${comments.trim()}\n`
       : '';
 
-    // Текст договора для промптов — одна переменная, без дублирования
     const contractBlock = contractText
       ? `ТЕКСТ ДОГОВОРА:\n\n${contractText}`
-      : 'Договор предоставлен в виде изображений выше. Извлеки и проанализируй весь текст.';
+      : 'Договор предоставлен в виде изображений выше.';
 
-    // ── ПРОМПТ 1: Детальный анализ → plain text ──────────────────────────────
+    // ── ЗАПРОС 1: Анализ договора → plain text ────────────────────────────
     const analysisPrompt = `Ты профессиональный российский юрист с опытом более 15 лет в договорном праве. Анализируй договор максимально детально и критично, защищая интересы указанной стороны.
 ${userInstructions}
 В начале анализа укажи: "Я представляю интересы: ${roleLabel}"
@@ -131,78 +131,82 @@ ${userInstructions}
 
 ${contractBlock}`;
 
-    // ── ПРОМПТ 2: Протокол разногласий → JSON ────────────────────────────────
-    // Получает только текст договора — БЕЗ результата анализа.
-    // Это вдвое сокращает размер промпта и позволяет запускать параллельно.
-    const protocolPrompt = `Ты профессиональный российский юрист. Изучи договор и составь Протокол разногласий с позиции ${roleGenitive}.
-${userInstructions}
-Найди все пункты договора которые ущемляют интересы ${roleGenitive} и для каждого предложи альтернативную редакцию.
+    console.log('[API] ЗАПРОС 1: анализ договора');
+    console.log('[API] Analysis prompt length:', analysisPrompt.length);
 
-Верни ТОЛЬКО JSON-объект, без пояснений, без markdown-блоков, первый символ ответа — {
+    const analysisResp = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8000,
+      messages: [
+        { role: 'user', content: [...imageContent, { type: 'text', text: analysisPrompt }] },
+      ],
+    });
 
+    const analysisResult = extractText(analysisResp);
+
+    console.log('[API] Analysis stop_reason:', analysisResp.stop_reason);
+    console.log('[API] Analysis result length:', analysisResult.length);
+    console.log('[API] Analysis result first 200:', analysisResult.slice(0, 200));
+
+    if (!analysisResult.trim()) {
+      throw new Error('Анализ вернул пустой текст. Проверьте API ключ и содержимое файлов.');
+    }
+
+    // ── ЗАПРОС 2: Протокол разногласий — только на основе analysisResult ──
+    // Текст договора НЕ передаётся повторно.
+    const protocolPrompt = `На основе этого анализа договора составь протокол разногласий с позиции ${roleGenitive}.
+
+Верни ТОЛЬКО JSON-объект (без markdown, без пояснений, первый символ — {):
 {
-  "contractTitle": "полное название договора",
+  "contractTitle": "название договора из анализа",
   "overallRisk": "high|medium|low",
   "protocolItems": [
     {
       "number": 1,
       "clauseRef": "п. 3.1",
-      "clauseTitle": "Краткое название пункта",
-      "originalText": "Дословный текст спорного пункта из договора",
-      "proposedText": "Готовая альтернативная редакция — юридически грамотная, защищающая интересы ${roleGenitive}",
-      "justification": "Обоснование: почему оригинал ущемляет ${roleGenitive} и чем обоснована правка",
+      "clauseTitle": "Название пункта",
+      "originalText": "Текущая редакция пункта",
+      "proposedText": "Предлагаемая редакция — готовая юридическая формулировка",
+      "justification": "Обоснование правки со ссылкой на норму",
       "legalRef": "Ст. 421 ГК РФ"
     }
   ]
 }
 
-Требования:
-- Минимум 8 пунктов, в идеале 10–14
-- proposedText — готовая юридическая формулировка, не пустая
-- overallRisk: "high" / "medium" / "low"
-- Первый символ ответа — {
+Для каждого проблемного пункта из анализа — отдельная строка в protocolItems.
+Минимум 8 пунктов.
+proposedText не должен быть пустым.
 
-${contractBlock}`;
+Вот анализ:
+${analysisResult}`;
 
-    console.log('[API] Contract text length:', contractText.length);
-    console.log('[API] Analysis prompt length:', analysisPrompt.length);
+    console.log('[API] ЗАПРОС 2: протокол разногласий');
     console.log('[API] Protocol prompt length:', protocolPrompt.length);
-    console.log('[API] Protocol prompt first 200 chars:', protocolPrompt.slice(0, 200));
+    console.log('[API] Protocol prompt first 200:', protocolPrompt.slice(0, 200));
 
-    // ── Параллельный запуск обоих запросов ───────────────────────────────────
-    const [analysisResp, protocolResp] = await Promise.all([
-      client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 10000,
-        messages: [{ role: 'user', content: [...imageContent, { type: 'text', text: analysisPrompt }] }],
-      }),
-      client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
-        messages: [{ role: 'user', content: [...imageContent, { type: 'text', text: protocolPrompt }] }],
-      }),
-    ]);
+    const protocolResp = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8000,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: protocolPrompt }] },
+      ],
+    });
 
-    const analysisText = extractText(analysisResp);
-    const protocolRaw  = extractText(protocolResp) || '{}';
+    const protocolRaw = extractText(protocolResp);
 
-    console.log('[API] Analysis stop_reason:', analysisResp.stop_reason, '| length:', analysisText.length);
-    console.log('[API] Protocol stop_reason:', protocolResp.stop_reason, '| length:', protocolRaw.length);
-    if (!protocolRaw.trim() || protocolRaw === '{}') {
+    console.log('[API] Protocol stop_reason:', protocolResp.stop_reason);
+    console.log('[API] Protocol response length:', protocolRaw.length);
+    if (!protocolRaw.trim()) {
       console.log('[API] PROTOCOL RESPONSE IS EMPTY');
     } else {
-      console.log('[API] Protocol raw first 200 chars:', protocolRaw.slice(0, 200));
-    }
-
-    if (!analysisText.trim()) {
-      throw new Error('Анализ вернул пустой текст. Проверьте API ключ и содержимое файлов.');
+      console.log('[API] Protocol response first 200:', protocolRaw.slice(0, 200));
     }
 
     const protocol = parseProtocolJson(protocolRaw);
 
     console.log('[API] Protocol items count:', (protocol.protocolItems || []).length);
     if ((protocol.protocolItems || []).length === 0) {
-      console.warn('[API] ⚠️ protocolItems empty! Raw:', protocolRaw.slice(0, 600));
+      console.warn('[API] ⚠️ protocolItems пустой. Raw:', protocolRaw.slice(0, 600));
     }
 
     return NextResponse.json({
@@ -212,12 +216,12 @@ ${contractBlock}`;
       analysisDate: new Date().toLocaleDateString('ru-RU', {
         year: 'numeric', month: 'long', day: 'numeric',
       }),
-      analysisText,
+      analysisText:  analysisResult,
       protocolItems: protocol.protocolItems || [],
     });
 
   } catch (error) {
-    console.error('Analysis error:', error);
+    console.error('[API] Error:', error);
     const message = error instanceof Error ? error.message : 'Неизвестная ошибка';
     return NextResponse.json(
       { error: `Ошибка при анализе договора: ${message}` },
