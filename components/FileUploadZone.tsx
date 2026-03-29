@@ -2,15 +2,6 @@
 
 import { useRef, useState, DragEvent, ChangeEvent } from 'react';
 
-const ACCEPTED_TYPES = '.pdf,.docx,.txt,.jpg,.jpeg,.png';
-const ACCEPTED_MIME = [
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/plain',
-  'image/jpeg',
-  'image/png',
-];
-
 const FILE_ICONS: Record<string, string> = {
   pdf: '📄',
   docx: '📝',
@@ -38,12 +29,7 @@ export default function FileUploadZone({ files, onChange }: Props) {
 
   const addFiles = (newFiles: FileList | null) => {
     if (!newFiles) return;
-    const valid = Array.from(newFiles).filter((f) =>
-      ACCEPTED_MIME.includes(f.type) || ACCEPTED_TYPES.split(',').some((ext) =>
-        f.name.toLowerCase().endsWith(ext.replace('.', '').toLowerCase())
-      )
-    );
-    onChange([...files, ...valid]);
+    onChange([...files, ...Array.from(newFiles)]);
   };
 
   const removeFile = (index: number) => {
@@ -72,7 +58,6 @@ export default function FileUploadZone({ files, onChange }: Props) {
           ref={inputRef}
           type="file"
           multiple
-          accept={ACCEPTED_TYPES}
           className="hidden"
           onChange={(e: ChangeEvent<HTMLInputElement>) => addFiles(e.target.files)}
         />
