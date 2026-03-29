@@ -4,6 +4,34 @@ import { extractTextFromFile } from '@/lib/extractText';
 
 export const maxDuration = 300;
 
+function parseProtocolJson(raw: string): {
+  contractTitle?: string;
+  overallRisk?: string;
+  protocolItems?: unknown[];
+} {
+  // Убираем markdown-блоки и прочий мусор вокруг JSON
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/im, '')
+    .replace(/```\s*$/m, '')
+    .trim();
+
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1) return {};
+
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    // Последняя попытка: удалить управляющие символы и повторить
+    try {
+      return JSON.parse(cleaned.slice(start, end + 1).replace(/[\x00-\x1F\x7F]/g, ' '));
+    } catch (e) {
+      console.error('Protocol JSON parse failed:', e, '\nRaw:', raw.slice(0, 400));
+      return {};
+    }
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -49,7 +77,7 @@ export async function POST(request: NextRequest) {
       ? `ТЕКСТ ДОГОВОРА:\n\n${contractText}`
       : 'Договор предоставлен в виде изображений выше. Извлеки и проанализируй весь текст.';
 
-    // ─── PROMPT 1: Детальный анализ → plain text ───────────────────────────
+    // ─── ШАГ 1: Детальный анализ → plain text ─────────────────────────────
     const analysisPrompt = `Ты профессиональный российский юрист с опытом более 15 лет в договорном праве. Анализируй договор максимально детально и критично, защищая интересы указанной стороны.
 ${userInstructions}
 В начале анализа укажи: "Я представляю интересы: ${roleLabel}"
@@ -95,85 +123,75 @@ ${userInstructions}
 
 ${contractBlock}`;
 
-    // ─── PROMPT 2: Протокол разногласий → JSON ─────────────────────────────
-    const protocolPrompt = `Ты профессиональный российский юрист. На основе договора составь протокол разногласий с позиции ${roleGenitive}.
+    const analysisResp = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8000,
+      messages: [
+        {
+          role: 'user',
+          content: [...imageContent, { type: 'text', text: analysisPrompt }],
+        },
+      ],
+    });
+
+    const analysisText =
+      analysisResp.content[0].type === 'text' ? analysisResp.content[0].text : '';
+
+    // ─── ШАГ 2: Протокол разногласий — на основе анализа + текста договора ──
+    // Теперь модель видит и договор, и проведённый анализ, и формирует
+    // конкретные правки по каждому выявленному проблемному пункту.
+    const protocolPrompt = `Ты профессиональный российский юрист. Тебе предоставлены:
+1) Текст договора
+2) Готовый юридический анализ этого договора с позиции ${roleGenitive}
 ${userInstructions}
-Верни результат строго в формате JSON (без markdown-блоков):
+На основе ПРОБЛЕМНЫХ ПУНКТОВ, выявленных в анализе, составь Протокол разногласий.
+Каждый проблемный пункт из анализа должен стать отдельной строкой протокола с конкретной альтернативной формулировкой.
+
+ВАЖНО: верни результат строго в виде JSON-объекта. Без пояснений до или после. Без markdown-блоков.
+Структура:
 {
-  "contractTitle": "полное название договора",
-  "overallRisk": "high|medium|low",
+  "contractTitle": "полное название договора из текста",
+  "overallRisk": "high",
   "protocolItems": [
     {
       "number": 1,
       "clauseRef": "п. 3.1",
       "clauseTitle": "Краткое название пункта",
-      "originalText": "Точный текст пункта из договора",
-      "proposedText": "Новая редакция — юридически грамотная, готовая к подписанию",
-      "justification": "Подробное обоснование правки: почему данный пункт ущемляет интересы ${roleGenitive} и каков правовой аргумент",
-      "legalRef": "Ст. 450 ГК РФ (или иной нормативный акт)"
+      "originalText": "Дословный текст спорного пункта из договора",
+      "proposedText": "Новая редакция этого пункта — юридически грамотная, защищающая интересы ${roleGenitive}, готовая к подписанию без дополнительных правок",
+      "justification": "Почему оригинальный пункт ущемляет интересы ${roleGenitive} и чем обоснована предлагаемая редакция",
+      "legalRef": "Ст. 421 ГК РФ"
     }
   ]
 }
 
-Требования:
-- Минимум 8–12 пунктов в протоколе
-- proposedText — готов к вставке в официальный документ без правок
-- justification — содержательный, со ссылкой на конкретную норму
-- Защищай интересы ${roleGenitive}
-- Верни ТОЛЬКО валидный JSON
+Требования к protocolItems:
+- Включи ВСЕ проблемные пункты из анализа — каждый должен быть в протоколе
+- Минимум 8 пунктов, в идеале 10–14
+- overallRisk — итоговая оценка риска: "high", "medium" или "low"
+- proposedText обязателен и не должен быть пустым — это готовая юридическая формулировка
+- Первый символ ответа должен быть {
 
-${contractBlock}`;
+=== АНАЛИЗ ДОГОВОРА ===
+${analysisText}
 
-    const analysisContentBlocks: Anthropic.MessageParam['content'] = [
-      ...imageContent,
-      { type: 'text', text: analysisPrompt },
-    ];
+=== ${contractBlock} ===`;
 
-    const protocolContentBlocks: Anthropic.MessageParam['content'] = [
-      ...imageContent,
-      { type: 'text', text: protocolPrompt },
-    ];
+    const protocolResp = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 6000,
+      messages: [
+        {
+          role: 'user',
+          content: [...imageContent, { type: 'text', text: protocolPrompt }],
+        },
+      ],
+    });
 
-    // Два параллельных запроса
-    const [analysisResp, protocolResp] = await Promise.all([
-      client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
-        messages: [{ role: 'user', content: analysisContentBlocks }],
-      }),
-      client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 6000,
-        messages: [{ role: 'user', content: protocolContentBlocks }],
-      }),
-    ]);
-
-    // Анализ — берём текст напрямую, без JSON-парсинга
-    const analysisText =
-      analysisResp.content[0].type === 'text' ? analysisResp.content[0].text : '';
-
-    // Протокол — парсим JSON, убираем возможные markdown-блоки
     const protocolRaw =
       protocolResp.content[0].type === 'text' ? protocolResp.content[0].text : '{}';
 
-    const jsonString = protocolRaw
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```\s*$/, '')
-      .trim();
-
-    const jsonStart = jsonString.indexOf('{');
-    const jsonEnd = jsonString.lastIndexOf('}');
-    const cleanJson =
-      jsonStart !== -1 && jsonEnd !== -1
-        ? jsonString.slice(jsonStart, jsonEnd + 1)
-        : '{}';
-
-    let protocol: { contractTitle?: string; overallRisk?: string; protocolItems?: unknown[] } = {};
-    try {
-      protocol = JSON.parse(cleanJson);
-    } catch (e) {
-      console.error('Protocol JSON parse error:', e, '\nRaw:', protocolRaw.slice(0, 300));
-    }
+    const protocol = parseProtocolJson(protocolRaw);
 
     return NextResponse.json({
       contractTitle: protocol.contractTitle || files[0]?.name || 'Договор',
