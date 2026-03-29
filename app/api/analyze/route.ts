@@ -15,16 +15,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Файлы не выбраны' }, { status: 400 });
     }
 
-    const client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
     const textParts: string[] = [];
     const imageContent: Anthropic.ImageBlockParam[] = [];
 
     for (const file of files) {
       const buffer = Buffer.from(await file.arrayBuffer());
-
       if (file.type.startsWith('image/') || file.name.match(/\.(jpg|jpeg|png)$/i)) {
         const mediaType = file.type.startsWith('image/') ? file.type : 'image/jpeg';
         imageContent.push({
@@ -37,114 +34,159 @@ export async function POST(request: NextRequest) {
         });
       } else {
         const text = await extractTextFromFile(buffer, file.type, file.name);
-        if (text.trim()) {
-          textParts.push(`[Файл: ${file.name}]\n${text}`);
-        }
+        if (text.trim()) textParts.push(`[Файл: ${file.name}]\n${text}`);
       }
     }
 
-    const roleText = role === 'customer' ? 'заказчик' : 'подрядчик';
+    const roleLabel = role === 'customer' ? 'ЗАКАЗЧИКА' : 'ПОДРЯДЧИКА';
     const roleGenitive = role === 'customer' ? 'заказчика' : 'подрядчика';
     const contractText = textParts.join('\n\n---\n\n');
     const userInstructions = comments.trim()
       ? `\nДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ ПОЛЬЗОВАТЕЛЯ:\n${comments.trim()}\n`
       : '';
 
-    const messageContent: Anthropic.MessageParam['content'] = [
-      ...imageContent,
-      {
-        type: 'text',
-        text: `Ты — опытный российский юрист, специализирующийся на договорном праве. Твоя задача — тщательно проанализировать предоставленный договор с позиции ${roleGenitive} и подготовить профессиональное заключение.
+    const contractBlock = contractText
+      ? `ТЕКСТ ДОГОВОРА:\n\n${contractText}`
+      : 'Договор предоставлен в виде изображений выше. Извлеки и проанализируй весь текст.';
+
+    // ─── PROMPT 1: Детальный анализ → plain text ───────────────────────────
+    const analysisPrompt = `Ты профессиональный российский юрист с опытом более 15 лет в договорном праве. Анализируй договор максимально детально и критично, защищая интересы указанной стороны.
 ${userInstructions}
-${contractText ? `ТЕКСТ ДОГОВОРА:\n\n${contractText}` : 'Договор предоставлен в виде изображений выше. Извлеки и проанализируй весь текст.'}
+В начале анализа укажи: "Я представляю интересы: ${roleLabel}"
 
-Предоставь детальный анализ в формате JSON строго по следующей структуре:
+ОБЯЗАТЕЛЬНО ПРОВЕРЬ И ОПИШИ:
 
+1. РИСКИ ДЛЯ МОЕЙ СТОРОНЫ
+   - Финансовые риски
+   - Операционные риски
+   - Правовые риски
+   - Скрытые риски и ловушки
+
+2. ОТВЕТСТВЕННОСТЬ СТОРОН
+   - Размер и условия штрафов и неустоек
+   - Основания для расторжения
+   - Форс-мажор — насколько широко трактуется
+   - Ограничение ответственности — справедливо ли
+
+3. МЕСТО СУДЕБНОГО РАЗБИРАТЕЛЬСТВА
+   - Где рассматриваются споры
+   - Выгодно ли это моей стороне
+   - Альтернативные варианты разрешения споров
+
+4. СООТВЕТСТВИЕ ГК РФ
+   - Прямые противоречия нормам ГК РФ
+   - Условия которые суд может признать недействительными
+   - Ссылки на конкретные статьи ГК РФ
+
+5. ОБЯЗАННОСТИ СТОРОН
+   - Полный перечень моих обязанностей
+   - Полный перечень обязанностей другой стороны
+   - Несбалансированность обязанностей
+
+6. ПРОБЛЕМНЫЕ ПУНКТЫ
+   - Размытые формулировки которые трактуются против меня
+   - Односторонние условия
+   - Чего не хватает в договоре
+
+7. ОБЩАЯ ОЦЕНКА
+   - Насколько договор выгоден моей стороне (1-10)
+   - Топ-3 самых критичных проблемы
+   - Рекомендация: подписывать / подписывать с правками / не подписывать
+
+${contractBlock}`;
+
+    // ─── PROMPT 2: Протокол разногласий → JSON ─────────────────────────────
+    const protocolPrompt = `Ты профессиональный российский юрист. На основе договора составь протокол разногласий с позиции ${roleGenitive}.
+${userInstructions}
+Верни результат строго в формате JSON (без markdown-блоков):
 {
-  "contractTitle": "полное название/тип договора",
+  "contractTitle": "полное название договора",
   "overallRisk": "high|medium|low",
-  "summary": "подробное резюме договора: что это за договор, ключевые условия, общая оценка — 3-4 абзаца",
-  "risks": [
+  "protocolItems": [
     {
-      "severity": "high|medium|low",
-      "clause": "номер или название пункта",
-      "description": "детальное описание риска для ${roleGenitive}",
-      "recommendation": "конкретная рекомендация как устранить или снизить риск"
-    }
-  ],
-  "problematicClauses": [
-    {
-      "number": "номер пункта",
-      "title": "название или краткое описание пункта",
-      "issue": "в чём конкретно проблема этого пункта",
-      "risk": "чем именно это грозит ${roleGenitive}"
-    }
-  ],
-  "missingClauses": [
-    "описание важного условия, которого нет в договоре, но которое необходимо ${roleGenitive}"
-  ],
-  "strengths": [
-    "конкретная сильная сторона договора выгодная ${roleGenitive}"
-  ],
-  "weaknesses": [
-    "конкретная слабая сторона договора невыгодная ${roleGenitive}"
-  ],
-  "recommendations": [
-    "конкретная рекомендация по улучшению договора в интересах ${roleGenitive}"
-  ],
-  "disagreementProtocol": [
-    {
-      "clauseNumber": "номер пункта",
-      "clauseTitle": "название/описание пункта",
-      "originalText": "точный или близкий к оригиналу текст спорного пункта",
-      "issue": "почему этот пункт неприемлем для ${roleGenitive}",
-      "proposedText": "готовая альтернативная формулировка этого пункта — юридически грамотная, конкретная, защищающая интересы ${roleGenitive}",
-      "justification": "правовое обоснование предлагаемых изменений"
+      "number": 1,
+      "clauseRef": "п. 3.1",
+      "clauseTitle": "Краткое название пункта",
+      "originalText": "Точный текст пункта из договора",
+      "proposedText": "Новая редакция — юридически грамотная, готовая к подписанию",
+      "justification": "Подробное обоснование правки: почему данный пункт ущемляет интересы ${roleGenitive} и каков правовой аргумент",
+      "legalRef": "Ст. 450 ГК РФ (или иной нормативный акт)"
     }
   ]
 }
 
 Требования:
-- Минимум 5-8 рисков
-- Минимум 5-8 проблемных пунктов
-- Минимум 5 отсутствующих условий
-- Минимум 5-8 пунктов в протоколе разногласий
-- Анализируй строго с позиции ${roleGenitive}
-- Протокол разногласий — это официальный юридический документ, формулировки должны быть готовы к использованию
-- Верни ТОЛЬКО валидный JSON без markdown-блоков, пояснений и дополнительного текста`,
-      },
+- Минимум 8–12 пунктов в протоколе
+- proposedText — готов к вставке в официальный документ без правок
+- justification — содержательный, со ссылкой на конкретную норму
+- Защищай интересы ${roleGenitive}
+- Верни ТОЛЬКО валидный JSON
+
+${contractBlock}`;
+
+    const analysisContentBlocks: Anthropic.MessageParam['content'] = [
+      ...imageContent,
+      { type: 'text', text: analysisPrompt },
     ];
 
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8000,
-      messages: [
-        {
-          role: 'user',
-          content: messageContent,
-        },
-      ],
-    });
+    const protocolContentBlocks: Anthropic.MessageParam['content'] = [
+      ...imageContent,
+      { type: 'text', text: protocolPrompt },
+    ];
 
-    const responseText =
-      response.content[0].type === 'text' ? response.content[0].text : '';
+    // Два параллельных запроса
+    const [analysisResp, protocolResp] = await Promise.all([
+      client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8000,
+        messages: [{ role: 'user', content: analysisContentBlocks }],
+      }),
+      client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 6000,
+        messages: [{ role: 'user', content: protocolContentBlocks }],
+      }),
+    ]);
 
-    // Extract JSON from response
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error('No JSON in response:', responseText.substring(0, 500));
-      throw new Error('Некорректный ответ от API');
+    // Анализ — берём текст напрямую, без JSON-парсинга
+    const analysisText =
+      analysisResp.content[0].type === 'text' ? analysisResp.content[0].text : '';
+
+    // Протокол — парсим JSON, убираем возможные markdown-блоки
+    const protocolRaw =
+      protocolResp.content[0].type === 'text' ? protocolResp.content[0].text : '{}';
+
+    const jsonString = protocolRaw
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/, '')
+      .trim();
+
+    const jsonStart = jsonString.indexOf('{');
+    const jsonEnd = jsonString.lastIndexOf('}');
+    const cleanJson =
+      jsonStart !== -1 && jsonEnd !== -1
+        ? jsonString.slice(jsonStart, jsonEnd + 1)
+        : '{}';
+
+    let protocol: { contractTitle?: string; overallRisk?: string; protocolItems?: unknown[] } = {};
+    try {
+      protocol = JSON.parse(cleanJson);
+    } catch (e) {
+      console.error('Protocol JSON parse error:', e, '\nRaw:', protocolRaw.slice(0, 300));
     }
 
-    const analysis = JSON.parse(jsonMatch[0]);
-    analysis.role = role;
-    analysis.analysisDate = new Date().toLocaleDateString('ru-RU', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
+    return NextResponse.json({
+      contractTitle: protocol.contractTitle || files[0]?.name || 'Договор',
+      overallRisk: protocol.overallRisk || 'medium',
+      role,
+      analysisDate: new Date().toLocaleDateString('ru-RU', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }),
+      analysisText,
+      protocolItems: protocol.protocolItems || [],
     });
-
-    return NextResponse.json(analysis);
   } catch (error) {
     console.error('Analysis error:', error);
     const message = error instanceof Error ? error.message : 'Неизвестная ошибка';

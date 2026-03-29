@@ -1,7 +1,7 @@
 {
   "/_not-found": "app/_not-found.js",
+  "/print/page": "app/print/page.js",
   "/api/generate-docx/route": "app/api/generate-docx/route.js",
   "/page": "app/page.js",
-  "/print/page": "app/print/page.js",
   "/api/analyze/route": "app/api/analyze/route.js"
 }
