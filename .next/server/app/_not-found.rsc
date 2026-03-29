@@ -1,5 +1,5 @@
 1:HL["/_next/static/css/34dec15a45c7c17b.css","style",{"crossOrigin":""}]
-0:["9X1LHIQFt7IgNBT0m_UGd",[[["",{"children":["__PAGE__",{}]},"$undefined","$undefined",true],"$L2",[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/css/34dec15a45c7c17b.css","precedence":"next","crossOrigin":""}]],"$L3"]]]]
+0:["rorwddgYw2kNkVqnNywkX",[[["",{"children":["__PAGE__",{}]},"$undefined","$undefined",true],"$L2",[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/css/34dec15a45c7c17b.css","precedence":"next","crossOrigin":""}]],"$L3"]]]]
 4:I[6954,[],""]
 5:I[7264,[],""]
 3:[["$","meta","0",{"charSet":"utf-8"}],["$","title","1",{"children":"Анализатор договоров — AI-юрист"}],["$","meta","2",{"name":"description","content":"Профессиональный анализ договоров с использованием искусственного интеллекта. Выявление рисков, протокол разногласий."}],["$","meta","3",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]

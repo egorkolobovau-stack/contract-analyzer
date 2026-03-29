@@ -125,7 +125,7 @@ ${contractBlock}`;
 
     const analysisResp = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 8000,
+      max_tokens: 10000,
       messages: [
         {
           role: 'user',
@@ -134,12 +134,21 @@ ${contractBlock}`;
       ],
     });
 
-    const analysisText =
-      analysisResp.content[0].type === 'text' ? analysisResp.content[0].text : '';
+    // Собираем все text-блоки (их может быть несколько)
+    const analysisText = analysisResp.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+
+    console.log('[STEP 1] Analysis stop_reason:', analysisResp.stop_reason);
+    console.log('[STEP 1] Analysis text length:', analysisText.length);
+    console.log('[STEP 1] Analysis text preview:', analysisText.slice(0, 200));
+
+    if (!analysisText.trim()) {
+      throw new Error('Анализ вернул пустой текст. Проверьте API ключ и содержимое файлов.');
+    }
 
     // ─── ШАГ 2: Протокол разногласий — на основе анализа + текста договора ──
-    // Теперь модель видит и договор, и проведённый анализ, и формирует
-    // конкретные правки по каждому выявленному проблемному пункту.
     const protocolPrompt = `Ты профессиональный российский юрист. Тебе предоставлены:
 1) Текст договора
 2) Готовый юридический анализ этого договора с позиции ${roleGenitive}
@@ -177,9 +186,12 @@ ${analysisText}
 
 === ${contractBlock} ===`;
 
+    console.log('[STEP 2] Protocol prompt length:', protocolPrompt.length);
+    console.log('[STEP 2] Analysis text in prompt (first 100):', protocolPrompt.includes(analysisText.slice(0, 50)) ? 'YES ✓' : 'NO ✗');
+
     const protocolResp = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 6000,
+      max_tokens: 10000,
       messages: [
         {
           role: 'user',
@@ -188,10 +200,24 @@ ${analysisText}
       ],
     });
 
-    const protocolRaw =
-      protocolResp.content[0].type === 'text' ? protocolResp.content[0].text : '{}';
+    // Собираем все text-блоки
+    const protocolRaw = protocolResp.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n') || '{}';
+
+    console.log('[STEP 2] Protocol stop_reason:', protocolResp.stop_reason);
+    console.log('[STEP 2] Protocol raw length:', protocolRaw.length);
+    console.log('[STEP 2] Protocol raw preview:', protocolRaw.slice(0, 500));
 
     const protocol = parseProtocolJson(protocolRaw);
+
+    console.log('[STEP 2] Protocol contractTitle:', protocol.contractTitle);
+    console.log('[STEP 2] Protocol overallRisk:', protocol.overallRisk);
+    console.log('[STEP 2] Protocol items count:', (protocol.protocolItems || []).length);
+    if ((protocol.protocolItems || []).length === 0) {
+      console.warn('[STEP 2] ⚠️ protocolItems is empty! Raw response was:', protocolRaw.slice(0, 800));
+    }
 
     return NextResponse.json({
       contractTitle: protocol.contractTitle || files[0]?.name || 'Договор',
