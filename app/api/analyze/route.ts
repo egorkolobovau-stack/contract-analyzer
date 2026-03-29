@@ -167,6 +167,7 @@ ${contractBlock}`;
     console.log('[API] Contract text length:', contractText.length);
     console.log('[API] Analysis prompt length:', analysisPrompt.length);
     console.log('[API] Protocol prompt length:', protocolPrompt.length);
+    console.log('[API] Protocol prompt first 200 chars:', protocolPrompt.slice(0, 200));
 
     // ── Параллельный запуск обоих запросов ───────────────────────────────────
     const [analysisResp, protocolResp] = await Promise.all([
@@ -187,7 +188,11 @@ ${contractBlock}`;
 
     console.log('[API] Analysis stop_reason:', analysisResp.stop_reason, '| length:', analysisText.length);
     console.log('[API] Protocol stop_reason:', protocolResp.stop_reason, '| length:', protocolRaw.length);
-    console.log('[API] Protocol raw preview:', protocolRaw.slice(0, 300));
+    if (!protocolRaw.trim() || protocolRaw === '{}') {
+      console.log('[API] PROTOCOL RESPONSE IS EMPTY');
+    } else {
+      console.log('[API] Protocol raw first 200 chars:', protocolRaw.slice(0, 200));
+    }
 
     if (!analysisText.trim()) {
       throw new Error('Анализ вернул пустой текст. Проверьте API ключ и содержимое файлов.');
